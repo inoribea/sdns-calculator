@@ -11,3 +11,5 @@ I cannot properly obtain the certificate and compute the hash for the compute se
 2.Importing cryptography Python modules  
 3.Download scripts for your language  
 4.Run it!  
+
+If you encounter any problems during use, please submit your issues
