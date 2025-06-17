@@ -23,15 +23,27 @@ def get_server_certificate(hostname, port, protocol):
 
     if protocol.lower() == "dot":
         context.minimum_version = ssl.TLSVersion.TLSv1_2
-        context.set_ciphers('DEFAULT@SECLEVEL=2')
-
-    with socket.create_connection((hostname, port)) as sock:
-        if protocol.lower() in ["dot", "doh"]:
-            with context.wrap_socket(sock, server_hostname=hostname) as sslsock:
-                cert_data = sslsock.getpeercert(binary_form=True)
-        else:
-            raise NotImplementedError("Certificate validation only supports DoH/DoT")
-    return x509.load_der_x509_certificate(cert_data, default_backend())
+    try:
+        with socket.create_connection((hostname, port)) as sock:
+            if protocol.lower() in ["dot", "doh"]:
+                with context.wrap_socket(sock, server_hostname=hostname) as sslsock:
+                    cert_data = sslsock.getpeercert(binary_form=True)
+            else:
+                print("错误: 证书验证仅支持 DoH/DoT。")
+                return None
+        return x509.load_der_x509_certificate(cert_data, default_backend())
+    except ssl.SSLError as e:
+        print(f"证书验证失败: {e}")
+        return None
+    except socket.gaierror:
+        print("无法解析服务器地址。")
+        return None
+    except (socket.timeout, ConnectionRefusedError) as e:
+        print(f"连接失败: {e}")
+        return None
+    except Exception as e:
+        print(f"发生意外错误: {e}")
+        return None
 
 def extract_tbs_certificate(cert):
     return cert.tbs_certificate_bytes
@@ -45,7 +57,7 @@ def build_dns_stamp(
     address,
     hostname,
     path,
-    cert,
+    cert=None, # Make cert optional
     dnssec=False,
     no_filter=False,
     no_logs=False
@@ -59,14 +71,26 @@ def build_dns_stamp(
     flags = flags.to_bytes(1, 'big')
     
     address_seg = bytes([len(address)]) + address.encode()
-    hash_seg = generate_hash_segment(cert)
+    
+    # Determine hash_seg based on protocol_id
+    if protocol_id == PROTOCOL_IDS["DNSCrypt"]:
+        hash_seg = b'\x00' * 8 # DNSCrypt uses 8 null bytes for hash
+    elif cert:
+        hash_seg = generate_hash_segment(cert)
+    else:
+        # This case should ideally not be reached if logic is correct,
+        # but as a fallback, use empty hash or raise an error.
+        # For now, let's use 8 null bytes as a safe default for protocols requiring cert but not provided.
+        hash_seg = b'\x00' * 8 
+        print("警告: 未提供证书，但协议可能需要。使用空哈希。")
+    
     hostname_seg = bytes([len(hostname)]) + hostname.encode()
     path_seg = bytes([len(path)]) + path.encode()
     
     full_bin = (
         protocol +
         flags +
-        b'\x00'*7 +
+        b'\x00'*7 + # Reserved bytes
         address_seg +
         hash_seg +
         hostname_seg +
@@ -143,24 +167,53 @@ if __name__ == "__main__":
             protocol = selected_option_name
             protocol_id = PROTOCOL_IDS[protocol]
             
-            default_address = "cloudflare-dns.com"
+            if protocol == "DNSCrypt":
+                default_address = "208.67.222.222" # Cloudflare DNSCrypt 示例
+                default_hostname = "dnscrypt.cloudflare-dns.com"
+                default_path = "" # DNSCrypt 通常不使用路径
+                default_port = 443 # DNSCrypt 通常使用 443 端口
+            elif protocol == "DoH":
+                default_address = "cloudflare-dns.com"
+                default_hostname = "cloudflare-dns.com"
+                default_path = "/dns-query"
+                default_port = 443
+            elif protocol == "DoT":
+                default_address = "cloudflare-dns.com"
+                default_hostname = "cloudflare-dns.com"
+                default_path = ""
+                default_port = 853
+            elif protocol == "DoQ":
+                default_address = "cloudflare-dns.com"
+                default_hostname = "cloudflare-dns.com"
+                default_path = ""
+                default_port = 853 # DoQ 通常使用 853 端口
+            else: # 其他协议或新协议的备用
+                default_address = "cloudflare-dns.com"
+                default_hostname = "cloudflare-dns.com"
+                default_path = ""
+                default_port = 443
+
             address_input = input(f"服务器地址 (IPv4/IPv6/域名) (例如: {default_address}): ")
             address = address_input if address_input else default_address
             
-            default_hostname = address
             hostname_input = input(f"用于证书验证的主机名 (例如: {default_hostname}): ")
             hostname = hostname_input if hostname_input else default_hostname
             
-            default_path = "/dns-query" if protocol == "DoH" else ""
             path_input = input(f"API 路径 (例如: /dns-query) (默认: {default_path}): ")
             path = path_input if path_input else default_path
             
-            default_port = 853 if protocol == 'DoT' else 443
             port_input = input(f"端口 (默认: {default_port}): ")
             port = int(port_input) if port_input else default_port
             
-            print(f"正在从 {hostname}:{port} 检索证书...")
-            cert = get_server_certificate(hostname, port, protocol)
+            cert = None
+            if protocol.lower() in ["doh", "dot"]:
+                print(f"正在从 {hostname}:{port} 检索证书...")
+                cert = get_server_certificate(hostname, port, protocol)
+                if cert is None:
+                    print("错误: 无法检索证书。无法生成 DNSStamp。")
+                    sys.exit(1)
+            else:
+                print(f"跳过 {protocol} 协议的证书检索。")
             
             dnssec_input = input("启用 DNSSEC 验证? (y/n) (默认: n): ").lower()
             dnssec = dnssec_input == 'y'

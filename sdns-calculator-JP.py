@@ -23,15 +23,28 @@ def get_server_certificate(hostname, port, protocol):
 
     if protocol.lower() == "dot":
         context.minimum_version = ssl.TLSVersion.TLSv1_2
-        context.set_ciphers('DEFAULT@SECLEVEL=2')
 
-    with socket.create_connection((hostname, port)) as sock:
-        if protocol.lower() in ["dot", "doh"]:
-            with context.wrap_socket(sock, server_hostname=hostname) as sslsock:
-                cert_data = sslsock.getpeercert(binary_form=True)
-        else:
-            raise NotImplementedError("Certificate validation only supports DoH/DoT")
-    return x509.load_der_x509_certificate(cert_data, default_backend())
+    try:
+        with socket.create_connection((hostname, port)) as sock:
+            if protocol.lower() in ["dot", "doh"]:
+                with context.wrap_socket(sock, server_hostname=hostname) as sslsock:
+                    cert_data = sslsock.getpeercert(binary_form=True)
+            else:
+                print("エラー: 証明書の検証は DoH/DoT のみをサポートしています。")
+                return None
+        return x509.load_der_x509_certificate(cert_data, default_backend())
+    except ssl.SSLError as e:
+        print(f"証明書の検証に失敗しました: {e}")
+        return None
+    except socket.gaierror:
+        print("サーバーアドレスの解決に失敗しました。")
+        return None
+    except (socket.timeout, ConnectionRefusedError) as e:
+        print(f"接続に失敗しました: {e}")
+        return None
+    except Exception as e:
+        print(f"予期せぬエラーが発生しました: {e}")
+        return None
 
 def extract_tbs_certificate(cert):
     return cert.tbs_certificate_bytes
@@ -45,7 +58,7 @@ def build_dns_stamp(
     address,
     hostname,
     path,
-    cert,
+    cert=None, # Make cert optional
     dnssec=False,
     no_filter=False,
     no_logs=False
@@ -59,14 +72,26 @@ def build_dns_stamp(
     flags = flags.to_bytes(1, 'big')
     
     address_seg = bytes([len(address)]) + address.encode()
-    hash_seg = generate_hash_segment(cert)
+    
+    # Determine hash_seg based on protocol_id
+    if protocol_id == PROTOCOL_IDS["DNSCrypt"]:
+        hash_seg = b'\x00' * 8 # DNSCrypt uses 8 null bytes for hash
+    elif cert:
+        hash_seg = generate_hash_segment(cert)
+    else:
+        # This case should ideally not be reached if logic is correct,
+        # but as a fallback, use empty hash or raise an error.
+        # For now, let's use 8 null bytes as a safe default for protocols requiring cert but not provided.
+        hash_seg = b'\x00' * 8 
+        print("警告: 证书未提供，但协议可能需要。使用空哈希。")
+    
     hostname_seg = bytes([len(hostname)]) + hostname.encode()
     path_seg = bytes([len(path)]) + path.encode()
     
     full_bin = (
         protocol +
         flags +
-        b'\x00'*7 +
+        b'\x00'*7 + # Reserved bytes
         address_seg +
         hash_seg +
         hostname_seg +
@@ -143,24 +168,53 @@ if __name__ == "__main__":
             protocol = selected_option_name
             protocol_id = PROTOCOL_IDS[protocol]
             
-            default_address = "cloudflare-dns.com"
+            if protocol == "DNSCrypt":
+                default_address = "208.67.222.222" # Cloudflare DNSCrypt の例
+                default_hostname = "dnscrypt.cloudflare-dns.com"
+                default_path = "" # DNSCrypt は通常パスを使用しません
+                default_port = 443 # DNSCrypt は通常ポート 443 を使用します
+            elif protocol == "DoH":
+                default_address = "cloudflare-dns.com"
+                default_hostname = "cloudflare-dns.com"
+                default_path = "/dns-query"
+                default_port = 443
+            elif protocol == "DoT":
+                default_address = "cloudflare-dns.com"
+                default_hostname = "cloudflare-dns.com"
+                default_path = ""
+                default_port = 853
+            elif protocol == "DoQ":
+                default_address = "cloudflare-dns.com"
+                default_hostname = "cloudflare-dns.com"
+                default_path = ""
+                default_port = 853 # DoQ は通常ポート 853 を使用します
+            else: # その他のプロトコルまたは新しいプロトコルのフォールバック
+                default_address = "cloudflare-dns.com"
+                default_hostname = "cloudflare-dns.com"
+                default_path = ""
+                default_port = 443
+
             address_input = input(f"サーバーアドレス (IPv4/IPv6/ドメイン) (例: {default_address}): ")
             address = address_input if address_input else default_address
             
-            default_hostname = address
             hostname_input = input(f"証明書検証用のホスト名を入力してください (例: {default_hostname}): ")
             hostname = hostname_input if hostname_input else default_hostname
             
-            default_path = "/dns-query" if protocol == "DoH" else ""
             path_input = input(f"API パス (例: /dns-query) (デフォルト: {default_path}): ")
             path = path_input if path_input else default_path
             
-            default_port = 853 if protocol == 'DoT' else 443
             port_input = input(f"ポート (デフォルト: {default_port}): ")
             port = int(port_input) if port_input else default_port
             
-            print(f"{hostname}:{port} から証明書を取得中...")
-            cert = get_server_certificate(hostname, port, protocol)
+            cert = None
+            if protocol.lower() in ["doh", "dot"]:
+                print(f"{hostname}:{port} から証明書を取得中...")
+                cert = get_server_certificate(hostname, port, protocol)
+                if cert is None:
+                    print("エラー: 証明書の取得に失敗しました。DNSStamp を生成できません。")
+                    sys.exit(1)
+            else:
+                print(f"{protocol} プロトコルの証明書取得をスキップします。")
             
             dnssec_input = input("DNSSEC 検証を有効にしますか? (y/n) (デフォルト: n): ").lower()
             dnssec = dnssec_input == 'y'
