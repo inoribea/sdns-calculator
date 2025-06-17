@@ -14,6 +14,8 @@ This project was created to provide a local solution for generating DNS Stamps, 
 3.  Download the script for your language (e.g., `sdns-calculator.py`)
 4.  Run it from your terminal: `python sdns-calculator.py`
 
+Additionally, you can now select "Certificate Info" (option 5) to retrieve detailed server certificate information (Subject, Issuer, Serial Number, Validity, SHA256 Fingerprint, and TBS SHA256 Hash) for DoH/DoT protocols.
+
 **Important Note for Windows Users:**
 If you encounter an `ImportError: DLL load failed while importing _rust: The specified procedure could not be found.` error when running the script, it is highly likely that your system is missing or has an outdated **Microsoft Visual C++ Redistributable** package. The `cryptography` library, which `sdns-calculator` depends on for secure operations, relies on these runtime components.
 To resolve this issue:
