@@ -12,8 +12,10 @@ PROTOCOL_IDS = {
     "DNSCrypt": 0x01,
     "DoH": 0x02,
     "DoT": 0x03,
-    "DoQ": 0x04  # DNS over QUIC (speculative ID per draft)
+    "DoQ": 0x04
 }
+
+ADDITIONAL_OPTION = "Certificate Info"
 
 def get_server_certificate(hostname, port, protocol):
     """Retrieve server certificate based on protocol type"""
@@ -21,12 +23,12 @@ def get_server_certificate(hostname, port, protocol):
     context.check_hostname = True
     context.verify_mode = ssl.CERT_REQUIRED
 
-    if protocol == "DoT":
+    if protocol.lower() == "dot":
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.set_ciphers('DEFAULT@SECLEVEL=2')
 
     with socket.create_connection((hostname, port)) as sock:
-        if protocol in ["DoT", "DoH"]:
+        if protocol.lower() in ["dot", "doh"]:
             with context.wrap_socket(sock, server_hostname=hostname) as sslsock:
                 cert_data = sslsock.getpeercert(binary_form=True)
         else:
@@ -54,7 +56,7 @@ def build_dns_stamp(
     protocol = protocol_id.to_bytes(1, 'big')
     
     flags = 0
-    if dnssec: flags |= 0x80  # DNSSEC validation required
+    if dnssec: flags |= 0x80
     if no_filter: flags |= 0x40
     if no_logs: flags |= 0x20
     flags = flags.to_bytes(1, 'big')
@@ -65,57 +67,132 @@ def build_dns_stamp(
     path_seg = bytes([len(path)]) + path.encode()
     
     full_bin = (
-        protocol +          # 1-byte protocol ID
-        flags +             # 1-byte flags (DNSSEC/NoFilter/NoLogs)
-        b'\x00'*7 +         # Reserved bytes (total 8)
-        address_seg +       # Address segment
-        hash_seg +          # Certificate hash
-        hostname_seg +      # Hostname segment
-        path_seg            # Path segment
+        protocol +
+        flags +
+        b'\x00'*7 +
+        address_seg +
+        hash_seg +
+        hostname_seg +
+        path_seg
     )
     
     encoded = base64.urlsafe_b64encode(full_bin).decode().rstrip('=')
     return f"sdns://{encoded}"
 
+def display_certificate_information(hostname, port, protocol_type):
+    """Helper function to display certificate information"""
+    try:
+        print(f"Retrieving certificate from {hostname}:{port} for {protocol_type}...")
+        cert = get_server_certificate(hostname, port, protocol_type)
+        print("\n--- Server Certificate Information ---")
+        print(f"Subject: {cert.subject}")
+        print(f"Issuer: {cert.issuer}")
+        print(f"Serial Number: {cert.serial_number}")
+        print(f"Valid From (UTC): {cert.not_valid_before_utc}")
+        print(f"Valid Until (UTC): {cert.not_valid_after_utc}")
+        
+        cert_der = cert.public_bytes(serialization.Encoding.DER)
+        sha256_fingerprint = hashlib.sha256(cert_der).hexdigest()
+        print(f"SHA256 Fingerprint: {sha256_fingerprint}")
+        
+        tbs_data = extract_tbs_certificate(cert)
+        tbs_sha256_hash = hashlib.sha256(tbs_data).hexdigest()
+        print(f"TBS SHA256 Hash (for DNSStamp): {tbs_sha256_hash}")
+        print("--------------------------------------\n")
+    except ssl.SSLError as e:
+        print(f"Certificate validation failed: {e}")
+    except socket.gaierror:
+        print("Failed to resolve server address")
+    except (socket.timeout, ConnectionRefusedError) as e:
+        print(f"Connection failed: {e}")
+    except NotImplementedError as e:
+        print(f"Error: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+
 if __name__ == "__main__":
     try:
         print("Protocol options:")
-        for idx, (name, _) in enumerate(PROTOCOL_IDS.items(), 1):
+        all_options = list(PROTOCOL_IDS.keys()) + [ADDITIONAL_OPTION]
+        for idx, name in enumerate(all_options, 1):
             print(f"{idx}. {name}")
-        protocol_choice = int(input("Enter protocol number: "))
-        protocol = list(PROTOCOL_IDS.keys())[protocol_choice-1]
-        protocol_id = PROTOCOL_IDS[protocol]
         
-        address = input("Server address (IPv4/IPv6/domain): ")
-        hostname = input("Hostname for certificate validation: ")
-        path = input("API path (e.g. /dns-query): ")
-        port = int(input(f"Port (default {853 if protocol == 'DoT' else 443}): ") or 
-                  (853 if protocol == 'DoT' else 443))
+        protocol_choice_input = input("Enter option number (eg: 2 for DoH, 5 for Certificate Info): ")
+        protocol_choice = int(protocol_choice_input) if protocol_choice_input else 2
         
-        print(f"Retrieving certificate from {hostname}:{port}...")
-        cert = get_server_certificate(hostname, port, protocol)
-        
-        dnssec = input("Enable DNSSEC validation? (y/n): ").lower() == 'y'
-        no_filter = input("Declare no filtering? (y/n): ").lower() == 'y'
-        no_logs = input("Declare no logs? (y/n): ").lower() == 'y'
-        
-        stamp = build_dns_stamp(
-            protocol_id,
-            address,
-            hostname,
-            path,
-            cert,
-            dnssec=dnssec,
-            no_filter=no_filter,
-            no_logs=no_logs
-        )
-        print("\nGenerated DNSStamp:")
-        print(stamp)
-        
+        if not (1 <= protocol_choice <= len(all_options)):
+            print("Invalid option number. Exiting.")
+            sys.exit(1)
+            
+        selected_option_name = all_options[protocol_choice-1]
+
+        if selected_option_name == ADDITIONAL_OPTION:
+            print(f"\n--- {ADDITIONAL_OPTION} ---")
+            hostname_input = input("Enter hostname for certificate validation (eg: cloudflare-dns.com): ")
+            if not hostname_input:
+                hostname_input = "cloudflare-dns.com"
+                print(f"Hostname not provided, using default: {hostname_input}")
+            
+            port_input = input("Enter port (eg: 853 for DoT, 443 for DoH): ")
+            port = int(port_input) if port_input else 443
+            
+            protocol_type_input = input("Enter protocol type for certificate retrieval (DoH/DoT): ").strip()
+            if protocol_type_input.lower() not in ["doh", "dot"]:
+                print("Invalid protocol type. Only DoH or DoT supported for certificate retrieval. Exiting.")
+                sys.exit(1)
+
+            display_certificate_information(hostname_input, port, protocol_type_input.lower())
+            sys.exit(0)
+        else:
+            protocol = selected_option_name
+            protocol_id = PROTOCOL_IDS[protocol]
+            
+            default_address = "cloudflare-dns.com"
+            address_input = input(f"Server address (IPv4/IPv6/domain) (eg: {default_address}): ")
+            address = address_input if address_input else default_address
+            
+            default_hostname = address
+            hostname_input = input(f"Hostname for certificate validation (eg: {default_hostname}): ")
+            hostname = hostname_input if hostname_input else default_hostname
+            
+            default_path = "/dns-query" if protocol == "DoH" else ""
+            path_input = input(f"API path (eg: /dns-query) (default: {default_path}): ")
+            path = path_input if path_input else default_path
+            
+            default_port = 853 if protocol == 'DoT' else 443
+            port_input = input(f"Port (default: {default_port}): ")
+            port = int(port_input) if port_input else default_port
+            
+            print(f"Retrieving certificate from {hostname}:{port}...")
+            cert = get_server_certificate(hostname, port, protocol)
+            
+            dnssec_input = input("Enable DNSSEC validation? (y/n) (default: n): ").lower()
+            dnssec = dnssec_input == 'y'
+            
+            no_filter_input = input("Declare no filtering? (y/n) (default: n): ").lower()
+            no_filter = no_filter_input == 'y'
+            
+            no_logs_input = input("Declare no logs? (y/n) (default: n): ").lower()
+            no_logs = no_logs_input == 'y'
+            
+            stamp = build_dns_stamp(
+                protocol_id,
+                address,
+                hostname,
+                path,
+                cert,
+                dnssec=dnssec,
+                no_filter=no_filter,
+                no_logs=no_logs
+            )
+            print("\nGenerated DNSStamp:")
+            print(stamp)
+            
+    except KeyboardInterrupt:
+        print("\nOperation cancelled by user. Exiting.")
+        sys.exit(0)
     except ssl.SSLError as e:
         print(f"Certificate validation failed: {e}")
-    except x509.InvalidCertificateError as e:
-        print(f"Invalid certificate: {e}")
     except socket.gaierror:
         print("Failed to resolve server address")
     except (socket.timeout, ConnectionRefusedError) as e:
