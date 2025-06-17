@@ -1,6 +1,8 @@
 # sdns-calculator
 
-DNS Stamp calculator component for Python
+DNS Stamp calculator component for Python, A simple DNS Stamp (DoH/DoT/DoQ) generation tool.
+
+**If you believe that generating your DNS Stamp online poses security risks, consider this open-source project. The calculation process is entirely local, ensuring no risk of data leakage.**
 
 - Thanks for jedisct1 and qwq-plus  
 - Code implementations sourced from [stamps-specifications](https://dnscrypt.info/stamps-specifications/)  
