@@ -12,16 +12,13 @@ jobs:
         include:
           - os: ubuntu-latest
             target: linux-x64
-            pyinstaller-args: --onefile
           - os: windows-latest
             target: win-x64
-            pyinstaller-args: --onefile --console
+            pyinstaller-extras: --collect-all cryptography
           - os: macos-latest
             target: macos-x64
-            pyinstaller-args: --onefile
           - os: macos-latest
             target: macos-arm64
-            pyinstaller-args: --onefile
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -37,20 +34,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller cryptography
 
-      - name: Build binaries
+      - name: Build binaries (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
         run: |
-          pyinstaller ${{ matrix.pyinstaller-args }} \
-            --name sdns-calculator-${{ matrix.target }} \
-            --distpath dist \
-            sdns-calculator.py
-          pyinstaller ${{ matrix.pyinstaller-args }} \
-            --name sdns-calculator-CN-${{ matrix.target }} \
-            --distpath dist \
-            sdns-calculator-CN.py
-          pyinstaller ${{ matrix.pyinstaller-args }} \
-            --name sdns-calculator-JP-${{ matrix.target }} \
-            --distpath dist \
-            sdns-calculator-JP.py
+          pyinstaller --onefile --console ${{ matrix.pyinstaller-extras }} --name sdns-calculator-${{ matrix.target }} --distpath dist sdns-calculator.py
+          pyinstaller --onefile --console ${{ matrix.pyinstaller-extras }} --name sdns-calculator-CN-${{ matrix.target }} --distpath dist sdns-calculator-CN.py
+          pyinstaller --onefile --console ${{ matrix.pyinstaller-extras }} --name sdns-calculator-JP-${{ matrix.target }} --distpath dist sdns-calculator-JP.py
+
+      - name: Build binaries (Unix)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          pyinstaller --onefile ${{ matrix.pyinstaller-extras }} --name sdns-calculator-${{ matrix.target }} --distpath dist sdns-calculator.py
+          pyinstaller --onefile ${{ matrix.pyinstaller-extras }} --name sdns-calculator-CN-${{ matrix.target }} --distpath dist sdns-calculator-CN.py
+          pyinstaller --onefile ${{ matrix.pyinstaller-extras }} --name sdns-calculator-JP-${{ matrix.target }} --distpath dist sdns-calculator-JP.py
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -60,11 +58,6 @@ jobs:
 
       - name: Upload to release
         if: github.event_name == 'release'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: dist/*
-          asset_name: sdns-calculator-${{ matrix.target }}${{ matrix.os == 'windows-latest' && '.exe' || '' }}
-          asset_content_type: application/octet-stream
+          files: dist/*
